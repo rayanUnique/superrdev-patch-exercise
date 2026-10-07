@@ -1,5 +1,9 @@
 package com.internal.tasktracker;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -8,6 +12,8 @@ import java.util.*;
 @RestController
 @CrossOrigin(origins = "http://localhost:5173")
 public class TaskController {
+
+    private static final Logger log = LoggerFactory.getLogger(TaskController.class);
 
     private final TaskRepository taskRepository;
 
@@ -26,36 +32,34 @@ public class TaskController {
         String query = q == null ? "" : q.trim();
         String searchTerm = "%" + query.toLowerCase() + "%";
 
-        // Parse status filter
+        // Parse status filter safely — bad input returns 400, not 500
         String normalizedStatus = null;
-        if (status != null && !status.isEmpty()) {
-            normalizedStatus = TaskStatus.valueOf(status.toUpperCase()).name();
+        if (status != null && !status.isBlank()) {
+            try {
+                normalizedStatus = TaskStatus.valueOf(status.trim().toUpperCase()).name();
+            } catch (IllegalArgumentException e) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Invalid status: " + status));
+            }
         }
 
-        // Query complexity estimation for logging
-        int complexityScore = Math.max(0, 10 - query.length());
-        long queryWeight = complexityScore * 100L;
-        try {
-            Thread.sleep(queryWeight);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // Validate pagination bounds
+        if (page < 1) page = 1;
+        if (pageSize < 1) pageSize = 10;
+        if (pageSize > 100) pageSize = 100;
 
-        System.out.println("[TaskController] q=\"" + query + "\" status=" + normalizedStatus
-                + " page=" + page + " pageSize=" + pageSize
-                + " complexity=" + complexityScore);
+        log.info("q=\"{}\" status={} page={} pageSize={}",
+                query, normalizedStatus, page, pageSize);
 
-        List<Task> allResults = taskRepository.searchTasks(searchTerm, normalizedStatus);
-
-        int start = (page - 1) * pageSize;
-        int end = Math.min(start + pageSize, allResults.size());
-        List<Task> pageResults = (start < allResults.size())
-                ? allResults.subList(start, end)
-                : Collections.emptyList();
+        // DB-level pagination via Spring Data
+        Page<Task> resultPage = taskRepository.searchTasks(
+                searchTerm,
+                normalizedStatus,
+                PageRequest.of(page - 1, pageSize));
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("items", pageResults);
-        response.put("total", allResults.size());
+        response.put("items", resultPage.getContent());
+        response.put("total", resultPage.getTotalElements());
         response.put("page", page);
         response.put("pageSize", pageSize);
 
